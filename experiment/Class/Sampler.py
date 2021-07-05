@@ -3,14 +3,12 @@ import numpy as np
 import time
 import math
 import faiss
-import timeout_decorator
 from pulp import *
-from nltk import ngrams
-from itertools import product
-import networkx as nx
-
+import stopit
+from sklearn.neighbors import kneighbors_graph
+from fast_pagerank import pagerank
 class _AbstractSampler():
-    def __init__(self, variants, p, seed=None, distanceMatrix=None, signature=None, expectedOccReduction=False, max_sampling_time=120):
+    def __init__(self, variants, p, seed=None, distanceMatrix=None, signature=None, expectedOccReduction=False, max_sampling_time=600):
         self.variants = variants.copy()
         self.p = p
         self.seed = seed
@@ -20,7 +18,6 @@ class _AbstractSampler():
         self.time_sampling = 0
         self.timeout = False
         self.max_sampling_time = max_sampling_time
-        self.randomlyReOrder()
         assert self.p < self.variants['count'].sum()
 
         # Capacity of each trace (i.e., how many traces can be assigned to it)
@@ -53,23 +50,19 @@ class _AbstractSampler():
             self.variants.loc[self.variants['count']<0,'count'] = 0
 
 
-
-        @timeout_decorator.timeout(self.max_sampling_time)
+        @stopit.threading_timeoutable(self.max_sampling_time)
         def start_sampling_with_timer():
             return self._sample(count)
 
-        try:
-            count_subsample = start_sampling_with_timer()
-        except timeout_decorator.timeout_decorator.TimeoutError:
+        count_subsample = start_sampling_with_timer(timeout=self.max_sampling_time)
+
+        if not isinstance(count_subsample, (np.ndarray)):
             self.timeout = True
             count_subsample = count
-
-        print (count_subsample.sum())
-
+        else:
+            if count_subsample.sum() != self.p:
+                raise ValueError('The count_subsample is not summing to p')
         self.time_sampling = time.time() - t
-
-        if count_subsample.sum() != self.p and not self.timeout:
-            raise ValueError('The count_subsample is not summing to p')
 
         return count_subsample
 
@@ -95,7 +88,7 @@ class RandomSampling(_TraceBased):
         i = self.variants.sample(n=int(self.p-initial_count_rep.sum()), replace=True, weights='count', random_state=self.seed).index
         return np.bincount(i.values, minlength=self.variants.shape[0]) + initial_count_rep
 
-class VariantFrequency(_TraceBased):
+class BiasedSamplingVariant(_TraceBased):
     def __init__(self, variants, p, seed, expectedOccReduction):
         _TraceBased.__init__(self, variants, p, seed, expectedOccReduction=expectedOccReduction)
 
@@ -109,32 +102,35 @@ class VariantFrequency(_TraceBased):
         return initial_count_rep
 
 class SimilarityBased(_VariantBased):
-    def __init__(self, variants, p, seed, expectedOccReduction, q=0.2):
+    def __init__(self, variants, p, seed, expectedOccReduction, q=0.33):
+        assert q < 1 and q>0
         self.q=q
+
         _VariantBased.__init__(self, variants, p, seed, expectedOccReduction=expectedOccReduction)
 
     def _sample(self, initial_count_rep):
         # Extract pairs
         pair = pd.DataFrame({
             'pair':[y for x in self.variants['seq'] for y in ['$$start$$']+x+['$$end$$']],
-            'index':self.variants.index.repeat(self.variants['length']+2)
+            'index':self.variants.index.repeat(self.variants['length']+2),
+            'count':self.variants['count'].repeat(self.variants['length']+2)
         })
-        count = pair['pair'].value_counts().reset_index()
-        n = int(self.q * count.shape[0])
-        count['point'] = 0
-        count.loc[count.head(n).index,'point'] = 1
-        count.loc[count.tail(n).index,'point'] = -1
-        point = count.set_index('index')['point'].to_dict()
-        pair['point'] = pair['pair'].map(point)
+        pair = pair.groupby('pair').sum()
+        pair = pair.drop(['$$start$$', '$$end$$'])
+        often_treshold = pair['count'].quantile(1-self.q)
+        rare_treshold = pair['count'].quantile(self.q)
+        pair['point'] = 0
+        pair.loc[pair['count']>=often_treshold,'point'] = 1
+        pair.loc[pair['count']<=rare_treshold,'point'] = -1
+        r = self.p - int(initial_count_rep.sum())
+        points = pair.groupby('index')['point'].sum()
+        points = self.variants.join(points)
+        points['point'] = points['point'].fillna(0)
+
 
         # Normalize by length
-        pair = pair.groupby('index')['point'].sum()
-
-        self.variants = self.variants.join(pair)
-        self.variants['point'] /= self.variants['length']
-
-        r = self.p - int(initial_count_rep.sum())
-        initial_count_rep[self.variants['point'].nlargest(r).index] += 1
+        points['point'] /= points['length']
+        initial_count_rep[points['point'].nlargest(r).index] += 1
 
         return initial_count_rep
 
@@ -225,22 +221,23 @@ class IterativeCminSum(_TraceBased):
         return np.bincount(output_count, minlength=self.variants.shape[0]) + initial_count_rep
 
 class LogRank(_VariantBased):
-    def __init__(self, variants, p, seed, distanceMatrix, expectedOccReduction):
-        _VariantBased.__init__(self, variants, p, seed, distanceMatrix=distanceMatrix, expectedOccReduction=expectedOccReduction)
+    def __init__(self, variants, p, seed, signature, expectedOccReduction, n_neighbors=30):
+        self.n_neighbors = n_neighbors
+        _VariantBased.__init__(self, variants, p, seed, signature=signature, expectedOccReduction=expectedOccReduction)
 
     def _sample(self, initial_count_rep):
-
         p = int(self.p-initial_count_rep.sum())
-        g = nx.convert_matrix.from_numpy_matrix(1-self.distanceMatrix)
-
-        self.variants['pagerank'] = nx.algorithms.link_analysis.pagerank_alg.pagerank(g, weight='weight').values()
-
+        g = kneighbors_graph(self.signature, n_neighbors=min(self.n_neighbors, int(self.signature.shape[0]/2)), mode='distance')
+        g /= g.max()
+        g[g>0] = 1 - g[g>0]
+        self.variants['pagerank'] = pagerank(g)
+        self.variants['pagerank'] *= self.variants['count']
         output_count = self.variants.sort_values('pagerank', ascending=False).head(p).index.values
         return np.bincount(output_count, minlength=self.variants.shape[0]) + initial_count_rep
 
 
 class IterativeCentralityWithRedundancyCheck(_VariantBased):
-    def __init__(self, variants, p, seed, distanceMatrix, expectedOccReduction, minDist=.05):
+    def __init__(self, variants, p, seed, distanceMatrix, expectedOccReduction, minDist=.1):
         self.minDist = minDist
         _VariantBased.__init__(self, variants, p, seed, distanceMatrix=distanceMatrix, expectedOccReduction=expectedOccReduction)
 

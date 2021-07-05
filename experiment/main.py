@@ -1,7 +1,7 @@
-from Class.DataPrep import DataPreparation
-from Class.Sampler import *
-from Class.Eval import KnolsBehavior, EMD
-from datasets import datasets
+from experiment.Class.DataPrep import DataPreparation
+from experiment.Class.Sampler import *
+from experiment.Class.Eval import KnolsBehavior, EMD
+from experiment.datasets import datasets
 
 def collect_result(sampler, data, distance_matrix_needed=False, signature_needed=False):
     '''
@@ -28,15 +28,19 @@ def collect_result(sampler, data, distance_matrix_needed=False, signature_needed
     results['SUM_time_preprocessing'] = results['time_load_csv'] + results['time_extract_variants'] + results['time_build_distance_matrix'] + results['time_to_build_signature']  + results['time_sampling']
 
     if not sampler.timeout:
+        s = time.time()
         # KnolsBehavior
         behavior = KnolsBehavior(data.variants, sampler.subsample_count)
         results['trulysampled'] = behavior.trulysampled
         results['undersampled'] = behavior.undersampled
         results['oversampled'] = behavior.oversampled
+        results['time_knols_eval'] = time.time()-s
 
+        s = time.time()
         # Measure EMD
-        emd = EMD(data.variants, sampler.subsample_count, data.distanceMatrix)
+        emd = EMD(data.variants, sampler.subsample_count, data.distanceMatrix, sampler.seed)
         results['emd'] = emd.score
+        results['time_emd_eval'] = time.time()-s
 
     return results
 
@@ -44,43 +48,47 @@ def collect_result(sampler, data, distance_matrix_needed=False, signature_needed
 if __name__ == '__main__':
     results = []
 
+    for seed in [0,1,2,3]:
+        for ds in datasets:
 
-    for ds in datasets:
-        data = DataPreparation(forceReload=True, **ds)
-        continue
-        for seed in range(5):
-            for p in range(5,101,25):
+            data = DataPreparation(forceReload=False, **ds)
+            data.randomlyReOrder(seed)
+
+            for p in [5,10,25,50,75,100,150,200]:
 
                 print (ds['name'])
 
-                sampler = RandomSampling(data.variants, p, seed=5, expectedOccReduction=False)
+                sampler = RandomSampling(data.variants, p, seed=seed, expectedOccReduction=False)
                 results.append(collect_result(sampler, data))
 
-                sampler = IterativeCentralityWithRedundancyCheck(data.variants, p, seed=1, expectedOccReduction=True, distanceMatrix=data.distanceMatrix)
+                sampler = RandomSampling(data.variants, p, seed=seed, expectedOccReduction=True)
                 results.append(collect_result(sampler, data))
 
-                sampler = LogRank(data.variants, p, seed=1, expectedOccReduction=True, distanceMatrix=data.distanceMatrix)
+                sampler = BiasedSamplingVariant(data.variants, p, seed=seed, expectedOccReduction=False)
                 results.append(collect_result(sampler, data))
 
-                sampler = SimilarityBased(data.variants, p, seed=1, expectedOccReduction=True)
+                sampler = SimilarityBased(data.variants, p, seed=seed, expectedOccReduction=True, q=0.2)
                 results.append(collect_result(sampler, data))
 
-                sampler = VariantFrequency(data.variants, p, seed=1, expectedOccReduction=False)
-                results.append(collect_result(sampler, data))
-
-                sampler = RandomSampling(data.variants, p, seed=1, expectedOccReduction=True)
-                results.append(collect_result(sampler, data))
-
-                # IterativeCminSum
-                sampler = IterativeCminSum(data.variants, p, seed=1, distanceMatrix=data.distanceMatrix, expectedOccReduction=False)
-                results.append(collect_result(sampler, data, distance_matrix_needed=True))
-
-                sampler = IterativeCminSum(data.variants, p, seed=1, distanceMatrix=data.distanceMatrix, expectedOccReduction=True)
-                results.append(collect_result(sampler, data, distance_matrix_needed=True))
-
-                sampler = IterativeCminSumEuclidean(data.variants, p, seed=1, signature=data.signature, expectedOccReduction=True)
+                sampler = LogRank(data.variants, p, seed=seed, expectedOccReduction=True, signature=data.signature, n_neighbors=200)
                 results.append(collect_result(sampler, data, signature_needed=True))
 
-                pd.DataFrame(results).to_csv('results.csv')
+                sampler = IterativeCentralityWithRedundancyCheck(data.variants, p, seed=seed, expectedOccReduction=True, distanceMatrix=data.distanceMatrix)
+                results.append(collect_result(sampler, data, distance_matrix_needed=True))
 
+                # IterativeCminSum
+                sampler = IterativeCminSum(data.variants, p, seed=seed, distanceMatrix=data.distanceMatrix, expectedOccReduction=False)
+                results.append(collect_result(sampler, data, distance_matrix_needed=True))
+                del sampler
+
+                sampler = IterativeCminSum(data.variants, p, seed=seed, distanceMatrix=data.distanceMatrix, expectedOccReduction=True)
+                results.append(collect_result(sampler, data, distance_matrix_needed=True))
+                del sampler
+
+                sampler = IterativeCminSumEuclidean(data.variants, p, seed=seed, signature=data.signature, expectedOccReduction=True)
+                results.append(collect_result(sampler, data, signature_needed=True))
+                del sampler
+
+            pd.DataFrame(results).to_csv('experiment/results.csv')
+            del data
 

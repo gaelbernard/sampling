@@ -147,14 +147,6 @@ datasets = [
     'ac':'Activity',
     'name': 'BPI2020_5'
 },
-#{
-#    #'doi':'10.4121/uuid:76c46b83-c930-4798-a1c9-4be94dfeb741',
-#    'path': '/Users/gbernar1/Documents/Dev/0_data/xes-standard-dataset/Hospital Billing - Event Log.csv',
-#    'ca':'Case ID',
-#    'ts':'Complete Timestamp',
-#    'ac':'Activity',
-#    'name': 'Hospital_bill'
-#},
 {
     #'doi':'10.4121/uuid:915d2bfb-7e84-49ad-a286-dc35f063a460',
     'path': '/Users/gbernar1/Documents/Dev/0_data/xes-standard-dataset/sepsis.csv',

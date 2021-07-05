@@ -1,24 +1,23 @@
-import pandas as pd
 import numpy as np
-import time
-import math
-import faiss
-import copy
-import networkx as nx
 from nltk import ngrams
 from pyemd import emd
 
 class EMD():
-    def __init__(self, variants, sample_count, distanceMatrix):
+    def __init__(self, variants, sample_count, distanceMatrix, seed):
         self.variants = variants
         self.sample_count = sample_count
         self.distanceMatrix = distanceMatrix
+        self.seed = seed
         self.score = self.score()
 
     def score(self):
+
         sub_hist = (self.sample_count/self.sample_count.sum()).astype(np.float64)
+
         full_hist = (self.variants['count']/self.variants['count'].sum()).values.astype(np.float64)
         return emd(sub_hist,full_hist,self.distanceMatrix.astype(np.float64))
+
+
 
 class KnolsBehavior():
     artificial_start_activities = '$$start$$'

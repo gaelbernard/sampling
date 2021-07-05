@@ -7,18 +7,27 @@ from itertools import combinations
 from sklearn.feature_extraction.text import CountVectorizer
 from sklearn.decomposition import TruncatedSVD
 
-'''
 
-'''
 
 class DataPreparation():
     ca = 'case:concept:name'
     ac = 'concept:name'
     ts = 'time:timestamp'
-    if not os.path.isdir('../pickles'):
-        os.mkdir('../pickles')
+    pickles_folder = '{}/experiment/pickles/'.format(os.path.abspath(os.curdir))
+    if not os.path.isdir(pickles_folder):
+        os.mkdir(pickles_folder)
 
-    def __init__(self, name, path, ca=ca, ac=ac, ts=ts, forceReload=False):
+    def __init__(self, name, path, ca=ca, ac=ac, ts=ts, forceReload=True):
+        '''
+        Prepare the data (load csv, build distance matrices, build signature)
+        and export pickles (so we don't have to load them again if forceReload is False)
+        :param name: name of the dataset
+        :param path: path of the csv
+        :param ca: column of the csv corresponding to case identifier
+        :param ac: column of the csv corresponding to activity
+        :param ts: column of the csv corresponding to timestamp
+        :param forceReload: If True, will create the pickles. If False it will load existing pickles
+        '''
         self.name = name
         self.path = path
         self.ca = ca
@@ -27,15 +36,15 @@ class DataPreparation():
         self.distanceMatrix, self.signature, self.variants, self.facts = [None]*4
         if forceReload:
             self.distanceMatrix, self.signature, self.variants, self.facts = self.load_from_csv()
-            np.save('pickles/{}_dm.pickle.npy'.format(self.name), self.distanceMatrix)
-            np.save('pickles/{}_sig.pickle.npy'.format(self.name), self.signature)
-            self.variants.to_pickle('pickles/{}_var.pickle'.format(self.name))
-            self.facts.to_pickle('pickles/{}_facts.pickle'.format(self.name))
+            np.save('{}{}_dm.pickle.npy'.format(self.pickles_folder, self.name), self.distanceMatrix)
+            np.save('{}{}_sig.pickle.npy'.format(self.pickles_folder, self.name), self.signature)
+            self.variants.to_pickle('{}{}_var.pickle'.format(self.pickles_folder, self.name))
+            self.facts.to_pickle('{}{}_facts.pickle'.format(self.pickles_folder, self.name))
         else:
-            self.distanceMatrix = np.load('pickles/{}_dm.pickle.npy'.format(self.name))
-            self.signature = np.load('pickles/{}_sig.pickle.npy'.format(self.name))
-            self.variants = pd.read_pickle('pickles/{}_var.pickle'.format(self.name))
-            self.facts = pd.read_pickle('pickles/{}_facts.pickle'.format(self.name))
+            self.distanceMatrix = np.load('{}{}_dm.pickle.npy'.format(self.pickles_folder, self.name), allow_pickle=True)
+            self.signature = np.load('{}{}_sig.pickle.npy'.format(self.pickles_folder, self.name), allow_pickle=True)
+            self.variants = pd.read_pickle('{}{}_var.pickle'.format(self.pickles_folder, self.name))
+            self.facts = pd.read_pickle('{}{}_facts.pickle'.format(self.pickles_folder, self.name))
 
     def load_from_csv(self):
         facts = {}
@@ -108,6 +117,23 @@ class DataPreparation():
         data = cv.fit_transform([['$$START$$']+x+['$$END$$'] for x in seq])
         data = TruncatedSVD(min(64, int(data.shape[1]/2)+1)).fit_transform(data).astype(np.float32)
         return data
+
+    def randomlyReOrder(self, seed):
+
+        # The order of the distance matrix
+        # or signature will influence the results
+        # For reproducibility purpose, we manage the order
+        np.random.seed(seed)
+        self.variants['random'] = np.random.random(self.variants.shape[0])
+        new_order = self.variants.sort_values(['count', 'random'], ascending=False).index
+        self.variants = self.variants.loc[new_order,:].reset_index()
+        if self.distanceMatrix is not None:
+            self.distanceMatrix = self.distanceMatrix[new_order,:][:,new_order]
+            self.distanceMatrix = np.ascontiguousarray(self.distanceMatrix, dtype=np.float64)
+        if self.signature is not None:
+            self.signature = self.signature[new_order,:]
+            self.signature = np.ascontiguousarray(self.signature[new_order,:])
+
 
 
 
