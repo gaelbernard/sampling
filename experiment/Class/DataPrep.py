@@ -7,8 +7,6 @@ from itertools import combinations
 from sklearn.feature_extraction.text import CountVectorizer
 from sklearn.decomposition import TruncatedSVD
 
-
-
 class DataPreparation():
     ca = 'case:concept:name'
     ac = 'concept:name'

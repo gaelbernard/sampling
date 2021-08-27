@@ -82,7 +82,8 @@ if True:
         raise ValueError('P value is not <0.01')
     table.index = table.index + 1
     table.drop(['df','pearson','pvalue','dataset'], axis=1).to_latex('output/correlation.txt', index=False)
-
+    print (table.to_string())
+    exit()
 # T8 and T9
 if True:
     subset = [6]
