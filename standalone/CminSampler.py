@@ -1,3 +1,4 @@
+import copy
 from collections import Counter, OrderedDict
 import numpy as np
 from itertools import combinations
@@ -8,37 +9,109 @@ from sklearn.decomposition import TruncatedSVD
 import faiss
 
 class CminSampler:
-    def __init__(self, seqs, p, max_variants_dm=1000):
-        assert isinstance(seqs, list)
-        assert p>0 and p<len(seqs)
+    max_variants_dm = 1000
 
+    def __init__(self, p):
+        self.seqs = None
         self.p = p
-        self.max_variants_dm = max_variants_dm
 
         # variants is a dictionary where key=variant and value=count
-        self.variants = OrderedDict(Counter([tuple(x) for x in seqs]))
+        self.variants = None
+        self.variant_to_id = None  # Store Case IDs if log or index if list
+        self.multiplicity = None
+        self.variant_seq = None
+
+        # capacity it the number of traces assigned to each rep'
+        self.capacity = None
+
+        # Expected occurrence reduction reduces the number of operations needed (see paper)
+        self.eo_counts = None
+        self.variants = None
+
+    def set_p(self, p):
+        self.p = p
+
+    def load_df(self, df, case_col, activity_col):
+        '''
+        Sample from a dataframe (we assume the dataframe is sorted)
+        :param df: dataframe
+        :param case_col: Case column
+        :param activity_col: Activity Col
+        '''
+        lst = df.groupby(case_col)[activity_col].agg(list)
+        index = lst.index.tolist()
+        lst = lst.tolist()
+        self.load_list(lst, index)
+
+    def load_list(self, lst, index=None):
+        assert isinstance(lst, list)
+        assert self.p > 0 and self.p < len(lst)
+
+        lst = [tuple(x) for x in lst]
+
+        # variants is a dictionary where key=variant and value=count
+        self.variants = OrderedDict(Counter(lst))
         self.multiplicity = np.array(list(self.variants.values()))
         self.variant_seq = list(self.variants.keys())
 
         # capacity it the number of traces assigned to each rep'
-        self.capacity = math.floor(self.multiplicity.sum()/self.p)
+        self.capacity = math.floor(self.multiplicity.sum() / self.p)
 
         # Expected occurrence reduction reduces the number of operations needed (see paper)
         self.eo_counts = np.floor(((self.multiplicity / self.multiplicity.sum())) * self.p)
-        self.variants = OrderedDict({x:int(y-self.eo_counts[i]) for i,(x,y) in enumerate(self.variants.items())})
+        self.variants = OrderedDict({x: int(y - self.eo_counts[i]) for i, (x, y) in enumerate(self.variants.items())})
 
-    def sample(self):
-        # If number of variants is small enough, use the DM approach
-        # i.e., build and work on cost matrix of edit distance
-        if len(self.variants) <= self.max_variants_dm:
-            sampler = self.samplingWithDM()
+        if not index:
+            index = list(range(len(lst)))
 
-        # If the number of variants is too big, this approach would take too long
-        # so we work in Euclidean space instead
-        else:
+        v = {x:[] for x in self.variants.keys()}
+        [v[x].append(index[i]) for i, x in enumerate(lst)]
+        v = [v[k] for k in self.variants.keys()]
+        self.variant_to_id = v
+
+    def sample(self, type='auto', output='case'):
+        '''
+
+        :param type:
+        - auto: choose best method automatically
+        - dm: slower (more accurate)
+        - eucl: faster (less accurate)
+        :param output:
+        - case: return case IDs (or index in list depending on how the data was loaded)
+        - seq: return sequences
+        :return: depend on the output param (see above)
+        '''
+
+        if type=='auto':
+            # If number of variants is small enough, use the DM approach
+            # i.e., build and work on cost matrix of edit distance
+            if len(self.variants) <= self.max_variants_dm:
+                sampler = self.samplingWithDM()
+
+            # If the number of variants is too big, this approach would take too long
+            # so we work in Euclidean space instead
+            else:
+                sampler = self.samplingWithEucl()
+
+        elif type=='eucl':
             sampler = self.samplingWithEucl()
 
-        return [y for i, x in enumerate(sampler) if x > 0 for y in [self.variant_seq[i]]*int(x)]
+        elif type=='dm':
+            sampler = self.samplingWithDM()
+
+        else:
+            raise ValueError('Error with param type')
+
+        if output == 'seq':
+            return [y for i, x in enumerate(sampler) if x > 0 for y in [self.variant_seq[i]]*int(x)]
+        elif output == 'case':
+            case_output = []
+            for i, x in enumerate(sampler):
+                case_output.extend(np.random.choice(self.variant_to_id[i], size=int(x), replace=x>len(self.variant_to_id[i])).tolist())
+
+            return case_output
+        else:
+            raise ValueError('Error with param output')
 
     def samplingWithDM(self):
         '''
@@ -107,7 +180,6 @@ class CminSampler:
             not_assigned[i_not_assigned[closest_to_best]] = False
 
         return np.bincount(output_count, minlength=self.multiplicity.shape[0]) + self.eo_counts
-
 
 
     def buildDistanceMatrix(self):
